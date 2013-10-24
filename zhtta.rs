@@ -28,7 +28,8 @@ static IP: &'static str = "127.0.0.1";
 
 struct sched_msg {
     stream: Option<std::rt::io::net::tcp::TcpStream>,
-    filepath: ~std::path::PosixPath
+    filepath: ~std::path::PosixPath,
+    file_size: uint
 }
 
 fn main() {
@@ -84,7 +85,7 @@ fn main() {
                                            None => { println(fmt!("Error: Invalid IP address <%s>", IP));
                                                      return;},
                                          };
-                                         
+    
     let socket = net::tcp::TcpListener::bind(SocketAddr {ip: ip, port: PORT as u16});
     
     println(fmt!("Listening on %s:%d ...", ip.to_str(), PORT));
@@ -135,13 +136,46 @@ fn main() {
                 }
                 else {
                     // Requests scheduling
-                    let msg: sched_msg = sched_msg{stream: stream, filepath: file_path.clone()};
+                    let mut file_size = 0;
+                    let reader : Result<@io::Reader, ~str> = io::file_reader(file_path);
+                    match reader {
+                        Ok(reader) => {
+                            reader.seek(0, io::SeekEnd);
+                            file_size = reader.tell();
+                        },
+                        Err(msg) => {
+                            println(msg);
+                        },
+                    }
+                    
+                    let msg: sched_msg = sched_msg{stream: stream, filepath: file_path.clone(), file_size: file_size};
                     let (sm_port, sm_chan) = std::comm::stream();
                     sm_chan.send(msg);
                     
+                    let ip_str = ip.to_str().clone();
+                    let mut is_ip_preferred = false;
+                    
+                    if ip_str.slice(0, 8) == "128.143." || ip_str.slice(0, 7) == "137.54." || ip_str.slice(0, 8) == "192.168." {
+                        is_ip_preferred = true;
+                    }
+                    
                     do child_add_vec.write |vec| {
                         let msg = sm_port.recv();
-                        (*vec).push(msg); // enqueue new request.
+                        if is_ip_preferred {
+                            (*vec).insert(0, msg); // enqueue new preferred request.
+                        }
+                        else {
+                            let mut insert_pos = 0;
+                            for queued_msg in vec.iter() {
+                                if msg.file_size > queued_msg.file_size {
+                                    insert_pos += 1;
+                                }
+                                else {
+                                    break;
+                                }
+                            }
+                            (*vec).insert(insert_pos, msg); // enqueue new request.
+                        }
                         println("add to queue");
                     }
                     child_chan.send(""); //notify the new arriving request.
