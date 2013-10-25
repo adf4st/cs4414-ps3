@@ -3,14 +3,14 @@
 //
 // Running on Rust 0.8
 //
-// Starting code for PS3
+// Code for PS3
 // 
 // Note: it would be very unwise to run this server on a machine that is
 // on the Internet and contains any sensitive files!
 //
 // University of Virginia - cs4414 Fall 2013
-// Weilin Xu and David Evans
-// Version 0.3
+// Daniel Nizri, Renee Seaman, and Alex Fabian
+// Version 0.4
 
 extern mod extra;
 
@@ -21,6 +21,7 @@ use std::cell::Cell;
 use std::{os, str, io};
 use extra::arc;
 use std::comm::*;
+use std::run;
 
 static PORT:    int = 4414;
 static IP: &'static str = "127.0.0.1";
@@ -52,12 +53,49 @@ fn main() {
         do spawn {
             loop {
                 let mut tf: sched_msg = sm_port.recv(); // wait for the dequeued request to handle
-                match io::read_whole_file(tf.filepath) { // killed if file size is larger than memory size.
+                match io::read_whole_file_str(tf.filepath) { // killed if file size is larger than memory size.
                     Ok(file_data) => {
                         println(fmt!("begin serving file [%?]", tf.filepath));
                         // A web server should always reply a HTTP header for any legal HTTP request.
-                        tf.stream.write("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream; charset=UTF-8\r\n\r\n".as_bytes());
-                        tf.stream.write(file_data);
+                        tf.stream.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n".as_bytes());
+                        //application/octet-stream
+                        
+                        let mut file_data_vec = ~[file_data.clone()];
+                        
+                        while(file_data_vec[0].contains("<!--#exec cmd=\"")) {
+                            let file_data_clone = file_data_vec[0].clone();
+                            let start_pos_ssi = file_data_clone.find_str("<!--#exec cmd=\"");
+                            match start_pos_ssi {
+                                Some(start_ssi) => {
+                                    let end_pos_ssi = file_data_clone.find_str("\" -->");
+                                    match end_pos_ssi {
+                                        Some(end_ssi) => {
+                                            let start_pos_cmd = start_ssi + 15;
+                                            let end_pos_cmd = end_ssi;
+                                            let cmd = file_data_clone.slice(start_pos_cmd, end_pos_cmd);
+                                            
+                                            let mut argv: ~[~str] = cmd.split_iter(' ').filter_map(|x| 
+                                                if x != "" {
+                                                    Some(x.to_owned())
+                                                }
+                                                else {
+                                                    None
+                                                }).to_owned_vec();
+
+                                            if argv.len() > 0 {
+                                                let program = argv.remove(0);
+                                                let output = str::from_utf8(run::process_output(program, argv).output);
+                                                file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
+                                            }
+                                        }
+                                        None      => { println("Not found") }
+                                    }
+                                }
+                                None      => { }
+                            }
+                        }
+                        
+                        tf.stream.write(file_data_vec[0].as_bytes());
                         println(fmt!("finish file [%?]", tf.filepath));
                     }
                     Err(err) => {
@@ -167,7 +205,7 @@ fn main() {
                         else {
                             let mut insert_pos = 0;
                             for queued_msg in vec.iter() {
-                                if msg.file_size > queued_msg.file_size {
+                                if msg.file_size >= queued_msg.file_size {
                                     insert_pos += 1;
                                 }
                                 else {
