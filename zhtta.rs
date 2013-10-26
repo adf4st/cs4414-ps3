@@ -22,10 +22,10 @@ use std::{os, str, io};
 use extra::arc;
 use std::comm::*;
 use std::run;
+use std::libc;
 
 static PORT:    int = 4414;
 static IP: &'static str = "127.0.0.1";
-//static mut visitor_count: uint = 0;
 
 struct sched_msg {
     stream: Option<std::rt::io::net::tcp::TcpStream>,
@@ -73,20 +73,8 @@ fn main() {
                                             let start_pos_cmd = start_ssi + 15;
                                             let end_pos_cmd = end_ssi;
                                             let cmd = file_data_clone.slice(start_pos_cmd, end_pos_cmd);
-                                            
-                                            let mut argv: ~[~str] = cmd.split_iter(' ').filter_map(|x| 
-                                                if x != "" {
-                                                    Some(x.to_owned())
-                                                }
-                                                else {
-                                                    None
-                                                }).to_owned_vec();
-
-                                            if argv.len() > 0 {
-                                                let program = argv.remove(0);
-                                                let output = str::from_utf8(run::process_output(program, argv).output);
-                                                file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
-                                            }
+                                            let output = get_gash_output(cmd.to_owned());
+                                            file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
                                         }
                                         None      => { println("Not found") }
                                     }
@@ -223,4 +211,115 @@ fn main() {
             println!("connection terminates")
         }
     }
+}
+
+/********************** MODIFIED GASH CODE **********************/
+fn get_gash_output(mut cmd_line : ~str) -> ~str {
+    cmd_line = cmd_line.trim().to_owned();
+    return handle_cmdline(cmd_line);
+}
+
+fn get_fd(fpath: &str, mode: &str) -> libc::c_int {
+    #[fixed_stack_segment]; #[inline(never)];
+
+    unsafe {
+        let fpathbuf = fpath.to_c_str().unwrap();
+        let modebuf = mode.to_c_str().unwrap();
+        return libc::fileno(libc::fopen(fpathbuf, modebuf));
+    }
+}
+
+fn handle_cmd(cmd_line: &str, pipe_in: libc::c_int, pipe_out: libc::c_int, pipe_err: libc::c_int) -> ~str {
+    let mut out_fd = pipe_out;
+    let mut in_fd = pipe_in;
+    let err_fd = pipe_err;
+    
+    let mut argv: ~[~str] =
+        cmd_line.split_iter(' ').filter_map(|x| if x != "" { Some(x.to_owned()) } else { None }).to_owned_vec();
+    let mut i = 0;
+    while (i < argv.len()) {
+        if (argv[i] == ~">") {
+            argv.remove(i);
+            out_fd = get_fd(argv.remove(i), "w");
+        } else if (argv[i] == ~"<") {
+            argv.remove(i);
+            in_fd = get_fd(argv.remove(i), "r");
+        }
+        i += 1;
+    }
+    
+    let mut output = ~"";
+    
+    let mut out = Some(out_fd);
+    let mut err = Some(err_fd);
+    
+    if pipe_out == -1 {
+        out = None;
+        err = None;
+    }
+    
+    if argv.len() > 0 {
+        let program = argv.remove(0);
+        match program {
+            ~"help"     => {output = ~"This is a new shell implemented in Rust!"}
+            _           => {let mut prog = run::Process::new(program, argv, run::ProcessOptions {
+                                                                                        env: None,
+                                                                                        dir: None,
+                                                                                        in_fd: Some(in_fd),
+                                                                                        out_fd: out,
+                                                                                        err_fd: err
+                                                                                    });
+                             if pipe_out == -1 {
+                                 let prog_output = prog.finish_with_output();
+                                 output = str::from_utf8(prog_output.output).replace("\n", "<br>");
+                             }
+                             else {
+                                 prog.finish();
+                             }
+                             
+                             if in_fd != 0 {os::close(in_fd);}
+                             if out_fd != 1 {os::close(out_fd);}
+                             if err_fd != 2 {os::close(err_fd);}
+                            }
+        }
+    }
+    
+    return output;
+}
+
+fn handle_cmdline(cmd_line:&str) -> ~str
+{
+    // handle pipes
+    let progs: ~[~str] = cmd_line.split_iter('|').filter_map(|x| if x != "" { Some(x.to_owned()) } else { None }).to_owned_vec();
+    
+    let mut pipes: ~[os::Pipe] = ~[];
+    
+    // create pipes
+    if (progs.len() > 1) {
+        for _ in range(0, progs.len()-1) {
+            pipes.push(os::pipe());
+        }
+    }
+    
+    let mut output = ~"";
+    
+    if progs.len() == 1 {
+        output = handle_cmd(progs[0], 0, -1, 2);
+    } else {
+        for i in range(0, progs.len()) {
+            let prog = progs[i].to_owned();
+            if i == 0 {
+                let pipe_i = pipes[i];
+                handle_cmd(prog, 0, pipe_i.out, 2);
+            } else if i < progs.len() - 1 {
+                let pipe_i = pipes[i];
+                let pipe_i_1 = pipes[i-1];
+                handle_cmd(prog, pipe_i_1.input, pipe_i.out, 2);
+            } else {
+                let pipe_i_1 = pipes[i-1];
+                output = handle_cmd(prog, pipe_i_1.input, -1, 2);
+            }
+        }
+    }
+    return output;
 }
