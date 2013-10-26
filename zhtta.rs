@@ -31,6 +31,55 @@ struct sched_msg {
     file_size: uint
 }
 
+struct cached_file {
+    content: ~str,
+    modified: ~str
+}
+
+fn get_file_contents(map: &mut hashmap::HashMap<~str, cached_file>, filepath: ~std::path::PosixPath) -> ~str {
+    if map.contains_key(&filepath.to_str()) {
+        match map.find(&filepath.to_str()) {
+            Some(cached_file) => {
+                let last_modified = get_gash_output(fmt!("stat -c %s %s", "%y", filepath.to_str()));
+                if last_modified != cached_file.modified {
+                    println(fmt!("file in cache was modified, re-reading %s", filepath.to_str()));
+                    match io::read_whole_file_str(filepath) {
+                        Ok(file_contents) => {
+                            let path = filepath.to_str();
+                            if path.slice(path.len() - 4, path.len()) != "html" {
+                                return file_contents.replace("\n", "<br>");
+                            }
+                            else {
+                                return file_contents;
+                            }
+                        }
+                        Err(err)          => { return err; }
+                    }
+                } else {
+                    println(fmt!("retrieving cached file: %s", filepath.to_str()));
+                    return cached_file.content.clone();
+                }
+            },
+            None    => { return ~""; }
+        }
+    }
+    else {
+        println(fmt!("reading file: %s", filepath.to_str()));
+        match io::read_whole_file_str(filepath) {
+            Ok(file_contents) => {
+                let path = filepath.to_str();
+                if path.slice(path.len() - 4, path.len()) != "html" {
+                    return file_contents.replace("\n", "<br>");
+                }
+                else {
+                    return file_contents;
+                }
+            }
+            Err(err)          => { return err; }
+        }
+    }
+}
+
 fn main() {
     let req_vec: ~[sched_msg] = ~[];
     let shared_req_vec = arc::RWArc::new(req_vec);
@@ -48,25 +97,14 @@ fn main() {
         
         // a task for sending responses.
         do spawn {
-            let mut cache_map: hashmap::HashMap<~str, ~str> = hashmap::HashMap::new();
+            let mut cache_map: hashmap::HashMap<~str, cached_file> = hashmap::HashMap::new();
             
             loop {
                 let mut tf: sched_msg = sm_port.recv(); // wait for the dequeued request to handle
-                
-                let file_contents = cache_map.find_or_insert_with(tf.filepath.to_str(), |path| {
-                    println(fmt!("reading file: %s", tf.filepath.to_str()));
-                    match io::read_whole_file_str(&PosixPath(*path)) {
-                        Ok(file_contents) => {
-                            if path.slice(path.len() - 4, path.len()) != "html" {
-                                file_contents.replace("\n", "<br>")
-                            }
-                            else {
-                                file_contents
-                            }
-                        }
-                        Err(err)          => err
-                    }
-                }).to_str();
+                let file_contents = get_file_contents(&mut cache_map, tf.filepath.clone());
+                let last_modified = get_gash_output(fmt!("stat -c %s %s", "%y", tf.filepath.to_str()));
+                let cached_file: cached_file = cached_file{content: file_contents.clone(), modified: last_modified};
+                cache_map.insert(tf.filepath.to_str(), cached_file);
                 
                 println(fmt!("begin serving file [%?]", tf.filepath));
                 // A web server should always reply a HTTP header for any legal HTTP request.
@@ -88,10 +126,10 @@ fn main() {
                                     let output = get_gash_output(cmd.to_owned());
                                     file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
                                 }
-                                None      => { println("Not found") }
+                                None      => { println("Error --- Found '<!--#exec cmd=\"' but not '\" -->'") }
                             }
                         }
-                        None      => { }
+                        None      => { println("Error --- Expected to find '<!--#exec cmd=\"' but did not") }
                     }
                 }
                 
@@ -104,7 +142,7 @@ fn main() {
             port.recv(); // wait for arrving notification
             do take_vec.write |vec| {
                 if ((*vec).len() > 0) {
-                    // LIFO didn't make sense in service scheduling, so we modify it as FIFO by using shift_opt() rather than pop().
+                    // LIFO didn't make sense in service scheduling, so modify it as FIFO by using shift_opt() rather than pop().
                     let tf_opt: Option<sched_msg> = (*vec).shift_opt();
                     let tf = tf_opt.unwrap();
                     println(fmt!("shift from queue, size: %ud", (*vec).len()));
