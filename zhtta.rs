@@ -18,11 +18,9 @@ use std::rt::io::*;
 use std::rt::io::net::ip::SocketAddr;
 use std::io::println;
 use std::cell::Cell;
-use std::{os, str, io};
+use std::{os, str, io, run, libc, hashmap};
 use extra::arc;
 use std::comm::*;
-use std::run;
-use std::libc;
 
 static PORT:    int = 4414;
 static IP: &'static str = "127.0.0.1";
@@ -44,52 +42,61 @@ fn main() {
     let (port, chan) = stream();
     let chan = SharedChan::new(chan);
     
-    // dequeue file requests, and send responses.
-    // FIFO
+    // FIFO - dequeue file requests, and send responses.
     do spawn {
         let (sm_port, sm_chan) = stream();
         
         // a task for sending responses.
         do spawn {
+            let mut cache_map: hashmap::HashMap<~str, ~str> = hashmap::HashMap::new();
+            
             loop {
                 let mut tf: sched_msg = sm_port.recv(); // wait for the dequeued request to handle
-                match io::read_whole_file_str(tf.filepath) { // killed if file size is larger than memory size.
-                    Ok(file_data) => {
-                        println(fmt!("begin serving file [%?]", tf.filepath));
-                        // A web server should always reply a HTTP header for any legal HTTP request.
-                        tf.stream.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n".as_bytes());
-                        //application/octet-stream
-                        
-                        let mut file_data_vec = ~[file_data.clone()];
-                        
-                        while(file_data_vec[0].contains("<!--#exec cmd=\"")) {
-                            let file_data_clone = file_data_vec[0].clone();
-                            let start_pos_ssi = file_data_clone.find_str("<!--#exec cmd=\"");
-                            match start_pos_ssi {
-                                Some(start_ssi) => {
-                                    let end_pos_ssi = file_data_clone.find_str("\" -->");
-                                    match end_pos_ssi {
-                                        Some(end_ssi) => {
-                                            let start_pos_cmd = start_ssi + 15;
-                                            let end_pos_cmd = end_ssi;
-                                            let cmd = file_data_clone.slice(start_pos_cmd, end_pos_cmd);
-                                            let output = get_gash_output(cmd.to_owned());
-                                            file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
-                                        }
-                                        None      => { println("Not found") }
-                                    }
-                                }
-                                None      => { }
+                
+                let file_contents = cache_map.find_or_insert_with(tf.filepath.to_str(), |path| {
+                    println(fmt!("reading file: %s", tf.filepath.to_str()));
+                    match io::read_whole_file_str(&PosixPath(*path)) {
+                        Ok(file_contents) => {
+                            if path.slice(path.len() - 4, path.len()) != "html" {
+                                file_contents.replace("\n", "<br>")
+                            }
+                            else {
+                                file_contents
                             }
                         }
-                        
-                        tf.stream.write(file_data_vec[0].as_bytes());
-                        println(fmt!("finish file [%?]", tf.filepath));
+                        Err(err)          => err
                     }
-                    Err(err) => {
-                        println(err);
+                }).to_str();
+                
+                println(fmt!("begin serving file [%?]", tf.filepath));
+                // A web server should always reply a HTTP header for any legal HTTP request.
+                tf.stream.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n".as_bytes());
+                
+                let mut file_data_vec = ~[file_contents.clone()];
+                
+                while(file_data_vec[0].contains("<!--#exec cmd=\"")) {
+                    let file_data_clone = file_data_vec[0].clone();
+                    let start_pos_ssi = file_data_clone.find_str("<!--#exec cmd=\"");
+                    match start_pos_ssi {
+                        Some(start_ssi) => {
+                            let end_pos_ssi = file_data_clone.find_str("\" -->");
+                            match end_pos_ssi {
+                                Some(end_ssi) => {
+                                    let start_pos_cmd = start_ssi + 15;
+                                    let end_pos_cmd = end_ssi;
+                                    let cmd = file_data_clone.slice(start_pos_cmd, end_pos_cmd);
+                                    let output = get_gash_output(cmd.to_owned());
+                                    file_data_vec[0] = file_data_clone.slice(0, start_ssi).clone().to_owned().append(output).append(file_data_clone.slice(end_ssi + 5, file_data_clone.len()));
+                                }
+                                None      => { println("Not found") }
+                            }
+                        }
+                        None      => { }
                     }
                 }
+                
+                tf.stream.write(file_data_vec[0].as_bytes());
+                println(fmt!("finish file [%?]", tf.filepath));
             }
         }
         
