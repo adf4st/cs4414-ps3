@@ -25,6 +25,8 @@ use std::comm::*;
 static PORT:    int = 4414;
 static IP: &'static str = "0.0.0.0";
 //static IP: &'static str = "127.0.0.1";
+static EXTRA_FEATURE_ENABLED : bool = false;
+static WAHOO_SCHEDULING_ENABLED : bool = false;
 
 struct sched_msg {
     stream: Option<std::rt::io::net::tcp::TcpStream>,
@@ -163,8 +165,7 @@ fn main() {
     println(fmt!("Listening on %s:%d ...", ip.to_str(), PORT));
     let mut acceptor = socket.listen().unwrap();
     
-    //let user_ips : ~[~str] = ~[];
-    let mut user_ips: hashmap::HashSet<~str> = hashmap::HashSet::new();
+    let user_ips: hashmap::HashSet<~str> = hashmap::HashSet::new();
     let shared_user_ips = arc::RWArc::new(user_ips);
     
     for stream in acceptor.incoming() {
@@ -287,7 +288,7 @@ fn main() {
                 }
                 else {
                     user_ips2.read(|vec| {
-                        if vec.contains(&incoming_ip) {
+                        if !EXTRA_FEATURE_ENABLED || vec.contains(&incoming_ip) {
                             // Requests scheduling
                             let mut file_size = 0;
                             let reader : Result<@io::Reader, ~str> = io::file_reader(file_path);
@@ -314,7 +315,7 @@ fn main() {
                             
                             do child_add_vec.write |vec| {
                                 let msg = sm_port.recv();
-                                if is_ip_preferred {
+                                if WAHOO_SCHEDULING_ENABLED && is_ip_preferred {
                                     (*vec).insert(0, msg); // enqueue new preferred request.
                                 }
                                 else {
