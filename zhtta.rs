@@ -163,6 +163,10 @@ fn main() {
     println(fmt!("Listening on %s:%d ...", ip.to_str(), PORT));
     let mut acceptor = socket.listen().unwrap();
     
+    //let user_ips : ~[~str] = ~[];
+    let mut user_ips: hashmap::HashSet<~str> = hashmap::HashSet::new();
+    let shared_user_ips = arc::RWArc::new(user_ips);
+    
     for stream in acceptor.incoming() {
         let stream = Cell::new(stream);
         
@@ -171,6 +175,10 @@ fn main() {
         let child_add_vec = add_vec.clone();
         let (port2, chan2) = std::comm::stream();
         chan2.send(shared_visitor_count.clone());
+        
+        let (ips_port, ips_chan) = std::comm::stream();
+        ips_chan.send(shared_user_ips.clone());
+        
         do spawn {
             let mut stream = stream.take();
             
@@ -187,12 +195,12 @@ fn main() {
                 },
                 None => {}
             }
-        
+            
             let credentials : ~[~str] = ~[~"dniz&catz",
-                                  ~"rsea&dogz",
-                                  ~"afab&carz",
-                                  ~"deva&rustz"];
-                                  
+                              ~"rsea&dogz",
+                              ~"afab&carz",
+                              ~"deva&rustz"];
+        
             let visitor_count = port2.recv();
             visitor_count.write(|count| {
                 *count += 1;
@@ -205,50 +213,81 @@ fn main() {
             
             let req_group : ~[&str]= request_str.splitn_iter(' ', 3).collect();
             if req_group.len() > 2 {
-                let path = req_group[1];
+                let path_or_user = req_group[1];
                 
-                match path.slice(1, path.len()).find_str("/") {
-                    Some(index) => {
-                        let user_and_pwd = path.slice(1, index + 1);
+                println(fmt!("Request for path/user: \n%?", path_or_user));
+                
+                let user_ips2 = ips_port.recv();
+                
+                let file_path = ~os::getcwd().push(path_or_user.replace("/../", ""));
+                if credentials.contains(&path_or_user.slice(1, path_or_user.len()).to_owned()) {
+                    println(fmt!("Request received:\n%s", request_str));
+                    
+                    let mut is_user_logged_in = false;
+                    user_ips2.read(|vec| {
+                        is_user_logged_in = (*vec).contains(&incoming_ip);
+                    });
+                    
+                    if !is_user_logged_in {
+                        user_ips2.write(|cur_user_ips| {
+                            (*cur_user_ips).insert(incoming_ip.clone());
+                        });
                         
-                        println(fmt!("Request for path: \n%?", path.slice(index + 1, path.len())));
+                        let response: ~str = fmt!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                             <doctype !html><html><head><title>Welcome!</title>
+                             <style>body { background-color: #111; color: #FFEEAA }
+                                    h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm blue}
+                                    h2 { font-size:1.5cm; text-align: center; color: black; text-shadow: 0 0 4mm orange}
+                             </style></head>
+                             <body>
+                             <h1>Greetings, %s!</h1>
+                             <h2>You are now logged in on this computer!</h2>
+                             </body></html>\r\n", path_or_user.slice(1, 5));
+
+                        stream.write(response.as_bytes());
+                    }
+                    else {
+                        user_ips2.write(|cur_user_ips| {
+                            (*cur_user_ips).remove(&incoming_ip.clone());
+                        });
                         
-                        let file_path = ~os::getcwd().push(path.slice(index + 1, path.len()).replace("/../", ""));
-                        if !credentials.contains(&user_and_pwd.to_owned()) {
-                            println(fmt!("Request received:\n%s", request_str));
-                            let response: ~str = fmt!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
-                                 <doctype !html><html><head><title>Bad Auth!</title>
-                                 <style>body { background-color: #111; color: #FFEEAA }
-                                        h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
-                                        h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
-                                 </style></head>
-                                 <body>
-                                 <h1>Not Authenticated, Krusty!</h1>
-                                 <h2>Nice try, %s</h2>
-                                 </body></html>\r\n", user_and_pwd);
+                        let response: ~str = fmt!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                             <doctype !html><html><head><title>Goodbye!</title>
+                             <style>body { background-color: #111; color: #FFEEAA }
+                                    h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm yellow}
+                                    h2 { font-size:1.5cm; text-align: center; color: black; text-shadow: 0 0 4mm purple}
+                             </style></head>
+                             <body>
+                             <h1>Goodbye, %s!</h1>
+                             <h2>You are now logged out!</h2>
+                             </body></html>\r\n", path_or_user.slice(1, 5));
+                        
+                        stream.write(response.as_bytes());
+                    }
+                }
+                else if !os::path_exists(file_path) || os::path_is_dir(file_path) {
+                    visitor_count.read(|val| {
+                        println(fmt!("Request received:\n%s", request_str));
+                        let response: ~str = fmt!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                             <doctype !html><html><head><title>Hello, Rust!</title>
+                             <style>body { background-color: #111; color: #FFEEAA }
+                                    h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
+                                    h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
+                             </style></head>
+                             <body>
+                             <h1>Greetings, Krusty!</h1>
+                             <h2>Visitor count: %u</h2>
+                             </body></html>\r\n", *val);
 
-                            stream.write(response.as_bytes());
-                        }
-                        else if !os::path_exists(file_path) || os::path_is_dir(file_path) {
-                            visitor_count.read(|val| {
-                                println(fmt!("Request received:\n%s", request_str));
-                                let response: ~str = fmt!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
-                                     <doctype !html><html><head><title>Hello, Rust!</title>
-                                     <style>body { background-color: #111; color: #FFEEAA }
-                                            h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
-                                            h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
-                                     </style></head>
-                                     <body>
-                                     <h1>Greetings, Krusty!</h1>
-                                     <h2>Visitor count: %u</h2>
-                                     </body></html>\r\n", *val);
-
-                                stream.write(response.as_bytes());
-                            });
-                        }
-                        else {
+                        stream.write(response.as_bytes());
+                    });
+                }
+                else {
+                    user_ips2.read(|vec| {
+                        if vec.contains(&incoming_ip) {
                             // Requests scheduling
                             let mut file_size = 0;
                             let reader : Result<@io::Reader, ~str> = io::file_reader(file_path);
@@ -262,7 +301,7 @@ fn main() {
                                 },
                             }
                             
-                            let msg: sched_msg = sched_msg{stream: stream, filepath: file_path.clone(), file_size: file_size};
+                            let msg: sched_msg = sched_msg{stream: stream.take(), filepath: file_path.clone(), file_size: file_size};
                             let (sm_port, sm_chan) = std::comm::stream();
                             sm_chan.send(msg);
                             
@@ -295,8 +334,24 @@ fn main() {
                             child_chan.send(""); //notify the new arriving request.
                             println(fmt!("get file request: %?", file_path));
                         }
-                    },
-                    None => {}
+                        else {
+                            println(fmt!("Request received:\n%s", request_str));
+                            
+                            let response: ~str = fmt!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                                 <doctype !html><html><head><title>Bad Auth!</title>
+                                 <style>body { background-color: #111; color: #FFEEAA }
+                                        h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
+                                        h2 { font-size:1.5cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
+                                 </style></head>
+                                 <body>
+                                 <h1>Bad Authentication, Krusty!</h1>
+                                 <h2>You must be logged in to access files!</h2>
+                                 </body></html>\r\n");
+
+                            stream.write(response.as_bytes());
+                        }
+                    });
                 }
             }
             println!("connection terminates")
