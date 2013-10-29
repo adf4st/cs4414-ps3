@@ -23,7 +23,8 @@ use extra::arc;
 use std::comm::*;
 
 static PORT:    int = 4414;
-static IP: &'static str = "127.0.0.1";
+static IP: &'static str = "0.0.0.0";
+//static IP: &'static str = "127.0.0.1";
 
 struct sched_msg {
     stream: Option<std::rt::io::net::tcp::TcpStream>,
@@ -171,6 +172,27 @@ fn main() {
         let (port2, chan2) = std::comm::stream();
         chan2.send(shared_visitor_count.clone());
         do spawn {
+            let mut stream = stream.take();
+            
+            let mut incoming_ip = ~"";
+            match stream {
+                Some(ref mut s) => {
+                    match s.peer_name() {
+                        Some(name) => { 
+                            incoming_ip = name.ip.to_str();
+                            println(fmt!("receiving from ip: %s", name.ip.to_str()));
+                        },
+                        None => {}
+                    }
+                },
+                None => {}
+            }
+        
+            let credentials : ~[~str] = ~[~"dniz&catz",
+                                  ~"rsea&dogz",
+                                  ~"afab&carz",
+                                  ~"deva&rustz"];
+                                  
             let visitor_count = port2.recv();
             visitor_count.write(|count| {
                 *count += 1;
@@ -184,73 +206,97 @@ fn main() {
             let req_group : ~[&str]= request_str.splitn_iter(' ', 3).collect();
             if req_group.len() > 2 {
                 let path = req_group[1];
-                println(fmt!("Request for path: \n%?", path));
                 
-                let file_path = ~os::getcwd().push(path.replace("/../", ""));
-                if !os::path_exists(file_path) || os::path_is_dir(file_path) {
-                    visitor_count.read(|val| {
-                        println(fmt!("Request received:\n%s", request_str));
-                        let response: ~str = fmt!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
-                             <doctype !html><html><head><title>Hello, Rust!</title>
-                             <style>body { background-color: #111; color: #FFEEAA }
-                                    h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
-                                    h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
-                             </style></head>
-                             <body>
-                             <h1>Greetings, Krusty!</h1>
-                             <h2>Visitor count: %u</h2>
-                             </body></html>\r\n", *val);
+                match path.slice(1, path.len()).find_str("/") {
+                    Some(index) => {
+                        let user_and_pwd = path.slice(1, index + 1);
+                        
+                        println(fmt!("Request for path: \n%?", path.slice(index + 1, path.len())));
+                        
+                        let file_path = ~os::getcwd().push(path.slice(index + 1, path.len()).replace("/../", ""));
+                        if !credentials.contains(&user_and_pwd.to_owned()) {
+                            println(fmt!("Request received:\n%s", request_str));
+                            let response: ~str = fmt!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                                 <doctype !html><html><head><title>Bad Auth!</title>
+                                 <style>body { background-color: #111; color: #FFEEAA }
+                                        h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
+                                        h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
+                                 </style></head>
+                                 <body>
+                                 <h1>Not Authenticated, Krusty!</h1>
+                                 <h2>Nice try, %s</h2>
+                                 </body></html>\r\n", user_and_pwd);
 
-                        stream.write(response.as_bytes());
-                    });
-                }
-                else {
-                    // Requests scheduling
-                    let mut file_size = 0;
-                    let reader : Result<@io::Reader, ~str> = io::file_reader(file_path);
-                    match reader {
-                        Ok(reader) => {
-                            reader.seek(0, io::SeekEnd);
-                            file_size = reader.tell();
-                        },
-                        Err(msg) => {
-                            println(msg);
-                        },
-                    }
-                    
-                    let msg: sched_msg = sched_msg{stream: stream, filepath: file_path.clone(), file_size: file_size};
-                    let (sm_port, sm_chan) = std::comm::stream();
-                    sm_chan.send(msg);
-                    
-                    let ip_str = ip.to_str().clone();
-                    let mut is_ip_preferred = false;
-                    
-                    if ip_str.slice(0, 8) == "128.143." || ip_str.slice(0, 7) == "137.54." || ip_str.slice(0, 8) == "192.168." {
-                        is_ip_preferred = true;
-                    }
-                    
-                    do child_add_vec.write |vec| {
-                        let msg = sm_port.recv();
-                        if is_ip_preferred {
-                            (*vec).insert(0, msg); // enqueue new preferred request.
+                            stream.write(response.as_bytes());
+                        }
+                        else if !os::path_exists(file_path) || os::path_is_dir(file_path) {
+                            visitor_count.read(|val| {
+                                println(fmt!("Request received:\n%s", request_str));
+                                let response: ~str = fmt!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n
+                                     <doctype !html><html><head><title>Hello, Rust!</title>
+                                     <style>body { background-color: #111; color: #FFEEAA }
+                                            h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red}
+                                            h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green}
+                                     </style></head>
+                                     <body>
+                                     <h1>Greetings, Krusty!</h1>
+                                     <h2>Visitor count: %u</h2>
+                                     </body></html>\r\n", *val);
+
+                                stream.write(response.as_bytes());
+                            });
                         }
                         else {
-                            let mut insert_pos = 0;
-                            for queued_msg in vec.iter() {
-                                if msg.file_size >= queued_msg.file_size {
-                                    insert_pos += 1;
+                            // Requests scheduling
+                            let mut file_size = 0;
+                            let reader : Result<@io::Reader, ~str> = io::file_reader(file_path);
+                            match reader {
+                                Ok(reader) => {
+                                    reader.seek(0, io::SeekEnd);
+                                    file_size = reader.tell();
+                                },
+                                Err(msg) => {
+                                    println(msg);
+                                },
+                            }
+                            
+                            let msg: sched_msg = sched_msg{stream: stream, filepath: file_path.clone(), file_size: file_size};
+                            let (sm_port, sm_chan) = std::comm::stream();
+                            sm_chan.send(msg);
+                            
+                            let ip_str = incoming_ip.to_str();
+                            let mut is_ip_preferred = false;
+                            
+                            if ip_str.slice(0, 8) == "128.143." || ip_str.slice(0, 7) == "137.54." {
+                                is_ip_preferred = true;
+                            }
+                            
+                            do child_add_vec.write |vec| {
+                                let msg = sm_port.recv();
+                                if is_ip_preferred {
+                                    (*vec).insert(0, msg); // enqueue new preferred request.
                                 }
                                 else {
-                                    break;
+                                    let mut insert_pos = 0;
+                                    for queued_msg in vec.iter() {
+                                        if msg.file_size >= queued_msg.file_size {
+                                            insert_pos += 1;
+                                        }
+                                        else {
+                                            break;
+                                        }
+                                    }
+                                    (*vec).insert(insert_pos, msg); // enqueue new request.
                                 }
+                                println("add to queue");
                             }
-                            (*vec).insert(insert_pos, msg); // enqueue new request.
+                            child_chan.send(""); //notify the new arriving request.
+                            println(fmt!("get file request: %?", file_path));
                         }
-                        println("add to queue");
-                    }
-                    child_chan.send(""); //notify the new arriving request.
-                    println(fmt!("get file request: %?", file_path));
+                    },
+                    None => {}
                 }
             }
             println!("connection terminates")
